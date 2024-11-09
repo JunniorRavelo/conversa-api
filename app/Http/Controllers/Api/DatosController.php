@@ -3,6 +3,7 @@
 namespace App\Http\Controllers\Api;
 
 use App\Http\Controllers\Controller;
+use Carbon\Carbon;
 use GuzzleHttp\Client;
 use Illuminate\Http\Request;
 use Illuminate\Support\Facades\Http;
@@ -93,7 +94,7 @@ class DatosController extends Controller
 
         try {
             // Configura las etiquetas de clasificación
-            $labels = ['ambiente', 'seguridad'];
+            $labels = ['ambiente', 'seguridad', 'fecha'];
 
             // Crea una instancia de Guzzle para hacer la solicitud a la API
             $client = new Client();
@@ -119,18 +120,20 @@ class DatosController extends Controller
             $label = $result['labels'][0];
 
             // Asigna un número basado en la etiqueta
-            $numero = 0;
+            $respuesta = 0;
             if ($label === 'ambiente') {
-                $numero = 1;
-
                 $respuesta =  $this->generateText("Lloviendo ambiente malo");
                 Log::info($respuesta);
-            } elseif ($label === 'seguridad') {
-                $numero = 2;
+            } 
+            if ($label === 'seguridad') {
+                $respuesta = 2;
             }
+            if ($label === 'fecha') {
+                $respuesta = Carbon::now()->isoFormat('dddd, D [de] MMMM [de] YYYY HH:mm');
+            } 
 
             // Devuelve el número en la respuesta
-            return response()->json(['numero' => $numero]);
+            return response()->json(['respuesta' => $respuesta]);
 
         } catch (\Exception $e) {
             // Manejo de errores
@@ -142,13 +145,11 @@ class DatosController extends Controller
     public function generateText($mensaje = "")
     {
 
-        Log::info(1);
         // Configura el cliente Guzzle
         $client = new Client();
         $apiUrl = "https://api-inference.huggingface.co/models/openai-community/gpt2";
         
         try {
-            Log::info(2);
             // Define los headers y el payload
             $headers = [
                 'Authorization' => 'Bearer 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',
@@ -164,12 +165,11 @@ class DatosController extends Controller
                 'json' => $payload,
             ]);
 
-            Log::info($response->getBody());
             // Procesa la respuesta de la API
             $data = json_decode($response->getBody(), true);
 
             // Retorna el texto generado en JSON
-            return response()->json(['generated_text' => $data[0]['generated_text']]);
+            return $data[0]['generated_text'];
 
         } catch (\Exception $e) {
             // Manejo de errores
