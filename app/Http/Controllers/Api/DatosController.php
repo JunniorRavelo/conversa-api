@@ -120,6 +120,8 @@ class DatosController extends Controller
             $label = $result['labels'][0];
 
             // Asigna un número basado en la etiqueta
+
+            Log::info($label);
             $respuesta = 0;
             if ($label === 'ambiente') {
                 $respuesta =  $this->generateText("Lloviendo ambiente malo");
