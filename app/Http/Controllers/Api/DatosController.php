@@ -12,9 +12,85 @@ use Illuminate\Support\Facades\Log;
 class DatosController extends Controller
 {
     /**
-     * Display a listing of the resource.
+     * Clasifica en una categoria el mensaje enviado atravez del microfono para enfocar la informacion
+     * en una sola base de datos o funcion especifica con sus respectivos filtros
      */
 
+    public function microfono(Request $request)
+    {
+        // Recibe el mensaje del request
+        $mensaje = $request->input('mensaje');
+
+        try {
+            // Configura las categorias de clasificación
+            $labels = ['fecha', 'segura', 'zona', 'clima', 'mapa'];
+
+            $client = new Client();
+            $response = $client->post('https://api-inference.huggingface.co/models/facebook/bart-large-mnli', [
+                'headers' => [
+                    'Authorization' => 'Bearer '.env('HUGGINGFACE_API_KEY'), // Reemplaza con tu API Key de Hugging Face
+                    'Content-Type' => 'application/json',
+                ],
+                'json' => [
+                    'inputs' => $mensaje,
+                    'parameters' => [
+                        'candidate_labels' => $labels,
+                    ],
+                ],
+            ]);
+            $result = json_decode($response->getBody(), true);
+
+            // Obtén la categoria con mayor relacion con el mensaje
+            $label = $result['labels'][0];
+
+            return response()->json(['respuesta' => $label,'tipo'=>$label]);
+
+            $respuesta = '' ;
+            $tipo = '';
+            // Retorna mensaje con fecha
+            if ($label === 'fecha') {
+                Carbon::setLocale('es');
+                $respuesta = Carbon::now()->isoFormat('dddd, D [de] MMMM [de] YYYY HH:mm');
+                $tipo = 'fecha';
+            } 
+            //comprueba si la zona es segura
+            if ($label === 'zona' || $label === 'segura') {
+           
+                $data = $this->zonasegura($request);
+                if ($data->status() === 200) {
+                    $respuestaData = $data->getData();
+                    if ($respuestaData->respuesta === "Zona insegura") {
+                        $respuesta = "Estás en una zona insegura";
+                        $tipo = 'zona insegura';
+                    } else {
+                        $respuesta = "Estás en una zona segura";
+                        $tipo = 'zona segura';
+                    }
+                } else {
+                    $respuesta = "Error al obtener datos de la zona";
+                    $tipo = 'desconocido';
+                }
+            }
+
+            //comprueba el clima actual de la persona
+            if ($label === 'clima') {
+                $data = $this->obtenerClima($request);
+                $respuestaData = $data->getData();
+                $respuesta = $respuestaData->respuesta;
+                $tipo = 'clima';
+            } 
+
+            return response()->json(['respuesta' => $respuesta,'tipo'=>$tipo]);
+
+        } catch (\Exception $e) {
+            return response()->json(['respuesta' => 'Error en la clasificación de mensaje'], 500);
+        }
+    }
+
+    /**
+     * Usa base de datos de datos publicos compara todas las latitudes y longirudes con la del usuario
+     * para determinar si esta cerca de una zona insegura y advertir
+     */
     public function zonasegura(Request $request)
     {
          // Coordenadas del usuario
@@ -26,16 +102,12 @@ class DatosController extends Controller
  
          // API de datos de Bucaramanga
          $apiUrl = 'https://www.datos.gov.co/api/id/75fz-q98y.json?$query=select%20*%20where%20ano%20=%20%272021%27';
- 
-         // Realiza la solicitud a la API externa
          $response = Http::get($apiUrl);
  
-         // Verifica si la solicitud fue exitosa
          if ($response->successful()) {
-             // Filtra y procesa los datos de ubicación
+             // Filtra y procesa los datos de ubicación descartando los que no sean validos para retornar solo las coordenadas
              $ubicaciones = collect($response->json())
                  ->filter(function ($item) {
-                     // Verifica que el elemento tenga latitud y longitud válidas
                      return $item['latitud'] !== 'xx.xxxx' && $item['longitud'] !== '-yy.yyyy';
                  })
                  ->map(function ($item) {
@@ -47,18 +119,16 @@ class DatosController extends Controller
                  ->values();
  
                  $esZonaInsegura = $ubicaciones->contains(function ($ubicacion) use ($latitudUsuario, $longitudUsuario, $radioCercania) {
-                     // Convertir a float las coordenadas y verificar si son numéricas
                      $latitudZona = (float) $ubicacion['latitud'];
                      $longitudZona = (float) $ubicacion['longitud'];
                      $latitudUsuario = (float) $latitudUsuario;
                      $longitudUsuario = (float) $longitudUsuario;
                  
                      if (!is_numeric($latitudZona) || !is_numeric($longitudZona) || !is_numeric($latitudUsuario) || !is_numeric($longitudUsuario)) {
-                         return false; // Ignora si alguna coordenada no es numérica
+                         return false; 
                      }
                  
-                     // Conversión de grados a radianes y cálculo de distancia
-                     $radioTierra = 6371; // Radio promedio de la Tierra en km
+                     $radioTierra = 6371;
                      $dLat = deg2rad($latitudZona - $latitudUsuario);
                      $dLon = deg2rad($longitudZona - $longitudUsuario);
                  
@@ -68,18 +138,15 @@ class DatosController extends Controller
                      $c = 2 * atan2(sqrt($a), sqrt(1 - $a));
                      $distancia = $radioTierra * $c;
                  
-                     // Comprueba si la distancia está dentro del radio de cercanía
                      return $distancia <= $radioCercania;
                  });
                  
-             // Devuelve si es una zona insegura o segura
              if ($esZonaInsegura) {
                  return response()->json(['respuesta' => 'Zona insegura']);
              } else {
                  return response()->json(['respuesta' => 'Zona segura']);
              }
          } else {
-             // En caso de error, devuelve un mensaje de error
              return response()->json([
                  'respuesta' => 'No se pudo obtener de la zona.'
              ], $response->status());
@@ -87,21 +154,20 @@ class DatosController extends Controller
     }
 
      
+    /**
+     * retorna lista de coordenas para crear una zona de calor con las zonas inseguras
+     */
     public function mapa()
     {
 
         //api datos bucaramanga
         $apiUrl = 'https://www.datos.gov.co/api/id/75fz-q98y.json?$query=select%20*%20where%20ano%20=%20%272021%27';
-
-        // Realiza la solicitud a la API externa
         $response = Http::get($apiUrl);
 
         // Verifica si la solicitud fue exitosa
         if ($response->successful()) {
-            // Filtra solo los datos de ubicación
             $ubicaciones = collect($response->json())
             ->filter(function ($item) {
-                // Verifica que el elemento tenga latitud y longitud válidas
                 return $item['latitud'] !== 'xx.xxxx' &&
                 $item['longitud'] !== '-yy.yyyy';
             })
@@ -112,11 +178,8 @@ class DatosController extends Controller
                 ];
             })
             ->values();
-
-            // Devuelve solo las ubicaciones en formato JSON
             return response()->json($ubicaciones);
         } else {
-            // En caso de error, devuelve un mensaje de error
             return response()->json([
                 'error' => 'No se pudo obtener los datos de la API externa.'
             ], $response->status());
@@ -124,10 +187,15 @@ class DatosController extends Controller
     }
 
 
+    /**
+     * retorna el clima actual en las cordenadas buscadas
+     */
     public function obtenerClima($request)
     {
+        return response()->json(['respuesta' => 'No se pudo obtener el clima.','tipo'=>'clima'],200);
         // URL de la API con el ID de la ciudad de Cúcuta y tu API Key
-        $apiUrl = "https://api.openweathermap.org/data/2.5/weather?id=3685533&appid=8fb651e5cdd8d9f304e94d53579e5f29&units=metric&lang=es";
+        $appid = env('OPENWEATHERMAP_API_KEY');
+        $apiUrl = "https://api.openweathermap.org/data/2.5/weather?id=3685533&appid=".$appid."&units=metric&lang=es";
         
         // Realiza la solicitud a la API
         $response = Http::get($apiUrl);
@@ -158,17 +226,22 @@ class DatosController extends Controller
     }
 
 
+    /**
+     * retorna el clima actual en las cordenadas actuales
+     */
     public function obtenerClimaMiUbicacion(Request $request)
     {
 
+        return response()->json(['respuesta' => 'No se pudo obtener el clima.','tipo'=>'clima'],200);
         // Coordenadas del usuario
         $latitudUsuario = $request->input('latitud');
         $longitudUsuario = $request->input('longitud');
 
 
+        $appid = env('OPENWEATHERMAP_API_KEY');
 
         // URL de la API con el ID de la ciudad de Cúcuta y tu API Key
-        $apiUrl = "https://api.openweathermap.org/data/2.5/weather?lat=".$latitudUsuario."&lon=".$longitudUsuario."&appid=8fb651e5cdd8d9f304e94d53579e5f29&units=metric&lang=es";
+        $apiUrl = "https://api.openweathermap.org/data/2.5/weather?lat=".$latitudUsuario."&lon=".$longitudUsuario."&appid=".$appid."&units=metric&lang=es";
         
         // Realiza la solicitud a la API
         $response = Http::get($apiUrl);
@@ -198,95 +271,9 @@ class DatosController extends Controller
         }
     }
 
-
-    public function microfono(Request $request)
-    {
-        // Recibe el mensaje del request
-        $mensaje = $request->input('mensaje');
-
-        Log::info($request->all());
-
-        try {
-            // Configura las etiquetas de clasificación
-            $labels = ['fecha', 'segura', 'zona', 'clima'];
-
-            // Crea una instancia de Guzzle para hacer la solicitud a la API
-            $client = new Client();
-
-            // Realiza la solicitud a la API de Hugging Face
-                $response = $client->post('https://api-inference.huggingface.co/models/facebook/bart-large-mnli', [
-                    'headers' => [
-                        'Authorization' => 'Bearer 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', // Reemplaza con tu API Key de Hugging Face
-                        'Content-Type' => 'application/json',
-                    ],
-                    'json' => [
-                        'inputs' => $mensaje,
-                        'parameters' => [
-                            'candidate_labels' => $labels,
-                        ],
-                    ],
-                ]);
-
-            // Procesa la respuesta de la API
-            $result = json_decode($response->getBody(), true);
-
-            // Obtén la etiqueta con mayor puntuación
-            $label = $result['labels'][0];
-
-            // Asigna un número basado en la etiqueta
-            Log::info($label);
-            $respuesta =$label ;
-            $tipo = '';
-
-            if ($label === 'fecha') {
-                Carbon::setLocale('es');
-                $respuesta = Carbon::now()->isoFormat('dddd, D [de] MMMM [de] YYYY HH:mm');
-                $tipo = 'fecha';
-            } 
-
-            if ($label === 'zona' || $label === 'segura') {
-                // Llama a la función zonasegura
-                $data = $this->zonasegura($request);
-                
-                // Verifica si la llamada fue exitosa
-                if ($data->status() === 200) {
-                    // Obtén la respuesta JSON
-                    $respuestaData = $data->getData();
-                    
-                    // Verifica el valor de la respuesta
-                    if ($respuestaData->respuesta === "Zona insegura") {
-                        $respuesta = "Estás en una zona insegura";
-                        $tipo = 'zona insegura';
-                    } else {
-                        $respuesta = "Estás en una zona segura";
-                        $tipo = 'zona segura';
-                    }
-                } else {
-                    // Manejo de error en la API
-                    $respuesta = "Error al obtener datos de la zona";
-                    $tipo = 'desconocido';
-                }
-            }
-
-            if ($label === 'clima') {
-                $data = $this->obtenerClima($request);
-                $respuestaData = $data->getData();
-                $respuesta = $respuestaData->respuesta;
-                $tipo = 'clima';
-            } 
-
-            // Devuelve el número en la respuesta
-            return response()->json(['respuesta' => $respuesta,'tipo'=>$tipo]);
-
-        } catch (\Exception $e) {
-            // Manejo de errores
-            return response()->json(['respuesta' => 'Error en la clasificación de mensaje'], 500);
-        }
-    }
-
-
-  
-
+    /**
+     * generar text coherente apartir de una frase
+     */
     public function generateText($mensaje = "")
     {
 
@@ -297,7 +284,7 @@ class DatosController extends Controller
         try {
             // Define los headers y el payload
             $headers = [
-                'Authorization' => 'Bearer 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',
+                'Authorization' => 'Bearer '.env('HUGGINGFACE_API_KEY'),
                 'Content-Type' => 'application/json',
             ];
             $payload = [
@@ -323,35 +310,4 @@ class DatosController extends Controller
     }
 
 
-    /**
-     * Store a newly created resource in storage.
-     */
-    public function store(Request $request)
-    {
-        //
-    }
-
-    /**
-     * Display the specified resource.
-     */
-    public function show(string $id)
-    {
-        //
-    }
-
-    /**
-     * Update the specified resource in storage.
-     */
-    public function update(Request $request, string $id)
-    {
-        //
-    }
-
-    /**
-     * Remove the specified resource from storage.
-     */
-    public function destroy(string $id)
-    {
-        //
-    }
 }
