@@ -7,7 +7,12 @@ use Illuminate\Support\Facades\Route;
 
 Route::get('mapa', [DatosController::class, 'mapa']);
 
+Route::post('zonasegura', [DatosController::class, 'zonasegura']);
+
+Route::post('miclima', [DatosController::class, 'obtenerClimaMiUbicacion']);
+
 Route::post('microfono', [DatosController::class, 'microfono']);
+
 
 /* 
 Route::get('/user', function (Request $request) {
