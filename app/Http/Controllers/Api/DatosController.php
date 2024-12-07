@@ -8,6 +8,8 @@ use GuzzleHttp\Client;
 use Illuminate\Http\Request;
 use Illuminate\Support\Facades\Http;
 use Illuminate\Support\Facades\Log;
+use Illuminate\Support\Facades\File;
+
 
 class DatosController extends Controller
 {
@@ -23,7 +25,7 @@ class DatosController extends Controller
 
         try {
             // Configura las categorias de clasificación
-            $labels = ['fecha', 'segura', 'zona', 'clima', 'mapa'];
+            $labels = ['fecha', 'segura', 'zona', 'clima', 'mapa','hospital'];
 
             $client = new Client();
             $response = $client->post('https://api-inference.huggingface.co/models/facebook/bart-large-mnli', [
@@ -43,10 +45,11 @@ class DatosController extends Controller
             // Obtén la categoria con mayor relacion con el mensaje
             $label = $result['labels'][0];
 
-            return response()->json(['respuesta' => $label,'tipo'=>$label]);
+            //return response()->json(['respuesta' => $label,'tipo'=>$label]);
 
             $respuesta = '' ;
             $tipo = '';
+            $datos = '';
             // Retorna mensaje con fecha
             if ($label === 'fecha') {
                 Carbon::setLocale('es');
@@ -79,8 +82,17 @@ class DatosController extends Controller
                 $respuesta = $respuestaData->respuesta;
                 $tipo = 'clima';
             } 
+            if ($label === 'hospital') {
+                $data = $this->ipscercana($request);
+                $respuestaData = $data->getData();
+                $datos = $respuestaData;
+                $respuesta = $respuestaData->respuesta;
+                $tipo = 'hospital';
+            } 
 
-            return response()->json(['respuesta' => $respuesta,'tipo'=>$tipo]);
+            
+
+            return response()->json(['respuesta' => $respuesta, 'tipo'=>$tipo, 'datos'=>$datos]);
 
         } catch (\Exception $e) {
             return response()->json(['respuesta' => 'Error en la clasificación de mensaje'], 500);
@@ -269,6 +281,82 @@ class DatosController extends Controller
             // En caso de error en la solicitud
             return response()->json(['respuesta' => 'No se pudo obtener el clima.','tipo'=>'clima'], $response->status());
         }
+    }
+
+
+
+
+    /**
+     * recorre un json de datos publicos y determina que sede esta más cercana cuando es solicitadas por el microfono
+     */
+    public function ipscercana(Request $request)
+    {
+        // Coordenadas del usuario
+        $latitudUsuario = (float) $request->input('latitud');
+        $longitudUsuario = (float) $request->input('longitud');
+
+
+        // Check if the file exists
+        $path = public_path('ips.json');
+        if (!File::exists($path)) {
+            return response()->json(['error' => 'No se pudo encontrar el archivo de IPs.'], 404);
+        }
+
+        // Parse the JSON file
+        $ipsData = collect(json_decode(File::get($path), true));
+
+        // Filter and map IP locations with valid latitude and longitude
+        $ubicaciones = $ipsData->filter(function ($item) {
+                return isset($item['latitud'], $item['longitud']) &&
+                    $item['latitud'] !== 'xx.xxxx' &&
+                    $item['longitud'] !== '-yy.yyyy';
+            })
+            ->map(function ($item) {
+                return [
+                    'nombre' => $item['nombre'] ?? null,
+                    'latitud' => (float)str_replace(',', '.', $item['latitud']),
+                    'longitud' => (float)str_replace(',', '.', $item['longitud']),
+                ];
+            })
+            ->values();
+
+        // Initialize variables to track the closest location
+        $closestLocation = null;
+        $minDistance = PHP_FLOAT_MAX;
+
+        // Calculate the closest location
+        foreach ($ubicaciones as $ubicacion) {
+            $latitudZona = $ubicacion['latitud'];
+            $longitudZona = $ubicacion['longitud'];
+
+            $distancia = $this->calculateDistance($latitudUsuario, $longitudUsuario, $latitudZona, $longitudZona);
+
+            // Update the closest location if a nearer one is found
+            if ($distancia < $minDistance) {
+                $minDistance = $distancia;
+                $closestLocation = $ubicacion;
+                $closestLocation['distancia'] = $distancia; // Optionally include the distance in the result
+            }
+        }
+
+        if ($closestLocation) {
+            return response()->json(['respuesta' => 'La ubicación más cercada es '.$closestLocation['nombre']??"No fue encontrada", 'ubicacion' => $closestLocation]);
+        } else {
+            return response()->json(['error' => 'No se encontró una ubicación cercana'], 404);
+        }
+    }
+
+    private function calculateDistance($lat1, $lon1, $lat2, $lon2)
+    {
+        $radioTierra = 6371; 
+        $dLat = deg2rad($lat2 - $lat1);
+        $dLon = deg2rad($lon2 - $lon1);
+
+        $a = sin($dLat / 2) * sin($dLat / 2) +
+            cos(deg2rad($lat1)) * cos(deg2rad($lat2)) *
+            sin($dLon / 2) * sin($dLon / 2);
+        $c = 2 * atan2(sqrt($a), sqrt(1 - $a));
+        return $radioTierra * $c;
     }
 
     /**
